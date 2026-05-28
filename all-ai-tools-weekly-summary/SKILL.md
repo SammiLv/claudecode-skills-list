@@ -1,6 +1,6 @@
 ---
 name: AI工具一周使用总结
-description: 从本地 AI 工具会话记录生成一周工作总结，支持单工具、多工具或全量汇总。触发词：帮我总结AI工具一周的工作。可在触发词后附加工具名（如 cursor、codex）指定单个或多个工具，附加 all 表示全量扫描所有本地工具，不附加任何参数则默认总结当前使用的 AI 工具。适用于 Claude Code、Codex、Cursor、WorkBuddy 等 AI 工具。如需写入钉钉文档，在触发词后附上【钉钉文件夹链接】。总结内容的输出格式按指定模板要求输出。
+description: 从本地 AI 工具会话记录生成一周工作总结，支持单工具、多工具或全量汇总。触发词：帮我总结AI工具一周的工作。可在触发词后附加工具名（如 cursor、codex）指定单个或多个工具，附加 all 表示全量扫描所有本地工具，不附加任何参数则默认总结当前使用的 AI 工具。适用于 Claude Code、Codex、Cursor、OpenCode、Trae、WorkBuddy 等 AI 工具。如需写入钉钉文档，在触发词后附上【钉钉文件夹链接】。总结内容的输出格式按指定模板要求输出。
 ---
 
 # AI 工具一周使用总结
@@ -63,7 +63,15 @@ description: 从本地 AI 工具会话记录生成一周工作总结，支持单
 - `cursor` → Cursor
 - `claudecode` / `claude` / `claude code` → Claude Code
 - `codex` → Codex
+- `opencode` / `open code` → OpenCode
+- `trae` / `trae cn` → Trae（**统一显示名，见下方 Trae 专规**）
 - `workbuddy` / `work buddy` → WorkBuddy
+
+**Trae 专规（触发词含 trae 时强制）：**
+- 数据扫描**必须同时覆盖** Trae 国际版与 Trae CN 两个安装路径（见第 2、3 步）。
+- 输出中**统一称「Trae」**：禁止将「Trae CN」「Trae 国际版」用作工具名、报告标题或「涉及AI工具」字段值。
+- 单工具标题必须是 `# Trae 一周工作总结｜...`，禁止 `# Trae CN 一周工作总结`。
+- 工作主题中的「涉及工具」字段写 `Trae`；若需区分来源，仅在概要/产出路径中注明配置文件路径，不把安装包名当作工具名。
 
 ### 第 1 步：确定时间范围
 
@@ -78,54 +86,96 @@ description: 从本地 AI 工具会话记录生成一周工作总结，支持单
   - Cursor：`~/.cursor/projects/*/agent-transcripts/**/*.jsonl`
   - Claude Code：`~/.claude/history.jsonl`、`~/.claude/projects/*/*.jsonl`、`~/.claude/projects/*/memory/YYYY-MM-DD.md`
   - Codex：`~/.codex/sessions/**/*.jsonl`、`~/.codex/history.jsonl`
+  - OpenCode：`~/.local/share/opencode/opencode.db`（session 表）
+  - Trae：`~/Library/Application Support/Trae/User/workspaceStorage/*/state.vscdb`、`~/Library/Application Support/Trae CN/User/workspaceStorage/*/state.vscdb`
   - WorkBuddy：`~/.workbuddy/workbuddy.db`（sessions 表）、`~/.workbuddy/projects/*/*.jsonl`
 - 不使用网络访问，不扫描无关大目录。
 
-### 第 3 步：收集各工具会话记录
+### 第 3 步：精准收集会话记录（Shell 预筛，严控读取量）
 
-> **⚠️ 严禁使用文件系统时间（mtime/ctime）筛选会话文件。**
-> 文件的修改时间可能因同步、索引等原因被意外更新，与会话实际发生时间无关。必须解析文件内部的时间戳字段来判断该文件是否在目标日期范围内。
+> **⚠️ 严禁使用文件系统时间（mtime/ctime）筛选会话文件。** 必须解析文件内部的时间戳字段；没有内部时间戳的文件直接跳过，不做猜测。
 >
-> **正确流程：先扫描发现候选文件 → 逐文件解析内部时间戳 → 只保留有消息落在目标范围内的文件 → 再提取内容。**
-> 没有内部时间戳的文件直接跳过，不做猜测。
+> **核心原则：先用 Shell / 辅助脚本提取关键字段，禁止直接读取完整 jsonl 文件。**
+>
+> **辅助脚本**：复杂扫描逻辑放在本 SKILL.md 同目录的 `scripts/` 下。执行前确认 `SKILL_DIR` = SKILL.md 所在目录，运行 `python3 "$SKILL_DIR/scripts/xxx.py"`。**禁止在 Skill 正文里自行重写或改用其他数据源。**
 
-**范围校验（在生成摘要之前必做）：**
-统计每个工具命中的有效记录条数，打印简明清单（`工具名 → N 条`）。WorkBuddy 以 sessions 表命中数为准；其他工具以 user_query / 用户消息为准。命中数为 0 的工具排除，不纳入报告。全部为 0 时直接报告"目标日期范围内未找到有效会话"并列出已检查路径。
+**硬性读取上限（所有工具通用，如有冲突以本表为准）：**
+
+| 限制项 | 上限 |
+|---|---|
+| 每个工具最多处理的会话文件数 | 30 个 |
+| 每个会话文件最多读取的行数 | 150 行 |
+| 单次 grep 输出最多使用的行数 | 300 行 |
+
+超出上限的部分直接跳过，不影响已提取内容的汇总。
+
+**范围校验（汇总前必做）：**
+统计每个工具命中的有效记录条数，打印简明清单（`工具名 → N 条`）。Claude Code 以 history.jsonl 去重 sessionId 数为准；OpenCode 以 session 表命中数为准；Trae 以 memento session 去重数为准（须执行 Trae 脚本；输出 `BY_INSTALL` 行确认两个安装路径均已扫描，`TOTAL_SESSIONS=0` 时检查是否误读了 ChatStore）；WorkBuddy 以 sessions 表命中数为准；其他工具以 user_query / 用户消息为准。命中数为 0 的工具排除，不纳入报告。全部为 0 时直接报告"目标日期范围内未找到有效会话"并列出已检查路径。
 
 只读取第 2 步确认纳入的工具，按工具逐一处理：
 
 - **Cursor**
-  - 遍历 `~/.cursor/projects/*/agent-transcripts/**/*.jsonl`。
-  - 只读取父会话文件：路径形如 `agent-transcripts/<sessionId>/<sessionId>.jsonl`；跳过 `subagents/*.jsonl`。
-  - **时间过滤**：解析每行 JSON 中 `role: "user"` 消息里 `message.content[].text` 内的 `<timestamp>...</timestamp>` 标签。时间戳格式为 `"Thursday, May 21, 2026, 2:06 PM (UTC+8)"`，必须解析 UTC 偏移量后与目标范围比较，只保留落在范围内的消息。
-  - 提取对应的 `<user_query>...</user_query>` 作为任务描述，必要时读取相邻 assistant 消息确认结果。
+  - 只取父会话：`agent-transcripts/<sessionId>/<sessionId>.jsonl`；跳过 `subagents/*.jsonl`。
+  - **时间过滤**：解析 user 消息内 `<timestamp>` 标签（格式含 UTC 偏移），只保留落在目标范围内的 `<user_query>`。
+  - **不读取 assistant 消息**，除非 user_query 结论不可判断时，才读相邻 assistant 摘要（最多 30 行）。
+  - 命令：
+    ```bash
+    find ~/.cursor/projects/*/agent-transcripts -maxdepth 2 -name "*.jsonl" \
+      | grep -v '/subagents/' | grep -E '/([0-9a-f-]+)/\1\.jsonl$' | head -30
+    grep -h '<timestamp>\|<user_query>' <文件路径列表> | head -300
+    ```
 
 - **Claude Code**
-  - 优先读取目标日期范围内的 `~/.claude/projects/*/memory/YYYY-MM-DD.md`。
-  - 若 memory 不足，再读取 `~/.claude/history.jsonl`，按 `timestamp` 筛选并收集 `project` 与 `sessionId`，将 `project` 路径转换到 `~/.claude/projects/` 下对应目录后，读取匹配 `sessionId` 的 `.jsonl`。
-  - 只提取用户请求、完成摘要、关键文件和验证信息，跳过 tool_result 与长日志。
+  - **`history.jsonl` 的 `timestamp` 是毫秒整数，禁止用 `grep '2026-05-xx'` 过滤，否则会命中 0 条。**
+  - 第一步：执行 `python3 "$SKILL_DIR/scripts/scan-claude-code-sessions.py"`，输出 `sessionId \t 时间 \t display \t project`。
+  - 第二步：`find ~/.claude/projects -name '<sessionId>.jsonl'`，再 `grep -m 80 '"role":"user"\|"type":"result"\|"summary"' <session.jsonl> | head -150`。
+  - 第三步（可选）：`python3 "$SKILL_DIR/scripts/scan-claude-code-memory.py"`；memory 已覆盖时可不再读 jsonl。
 
 - **Codex**
-  - 读取 `~/.codex/session_index.jsonl`，按每行的 `updated_at` 字段（ISO 8601 时间戳）筛选目标日期范围内的 session id，再在 `~/.codex/sessions/` 目录下读取对应 session 文件内容。
-  - `session_index.jsonl` 每行格式为 `{"id":"uuid","thread_name":"...","updated_at":"2026-05-21T05:10:15Z"}`，按 `updated_at` 过滤是合法且准确的（该字段由 Codex 写入，反映会话最后活跃时间）。
-  - 如存在 `~/.codex/history.jsonl`，用它辅助定位 session。
+  - 读 `~/.codex/session_index.jsonl`，按 `updated_at`（ISO 8601）筛选 session id，再读 `~/.codex/sessions/<id>.jsonl`。
+  - 命令（日期模式按第 1 步范围替换）：
+    ```bash
+    grep '<日期范围>' ~/.codex/session_index.jsonl | head -30
+    grep -m 60 '"role":"user"\|"content"' ~/.codex/sessions/<id>.jsonl | head -150
+    ```
+
+- **OpenCode**
+  - **优先查 `~/.local/share/opencode/opencode.db` 的 `session` 表**；`time_created` 为毫秒时间戳，禁止 grep 日期字符串。
+  - 第一步：按 `time_created` 筛选，取 `id`、`title`、`directory`（`START_MS`/`END_MS` 替换为第 1 步毫秒范围）。
+  - 第二步（可选）：从 `message`/`part` 表提取 `role=user` 且 `type=text` 的用户文本。
+  - 命令：
+    ```bash
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "SELECT id, title, directory FROM session WHERE time_created >= START_MS AND time_created <= END_MS ORDER BY time_created DESC LIMIT 30;"
+    ```
+
+- **Trae**
+  - **Trae 与 Trae CN 需同时扫描**；对话在各工作区 `state.vscdb`（SQLite）。
+  - **唯一 session 来源：`memento/icube-ai-agent-storage`**；用户请求来源：`icube-ai-agent-storage-input-history` 的 `inputText`。
+  - **禁止读 `ChatStore`**（仅 UI 布局，会误报 0 条）；**禁止读 `ModularData/ai-agent/database.db`**。
+  - **必须**执行 `python3 "$SKILL_DIR/scripts/scan-trae-sessions.py"`；禁止只扫 `Trae CN` 路径或自行改写逻辑。
+  - 脚本输出含 `BY_INSTALL` 行，确认 Trae / Trae CN 两个安装均已扫描；合并去重后**输出统一称「Trae」**，禁止称「Trae CN」。
 
 - **WorkBuddy**
-  - **优先查 sessions 表**，不要只扫 jsonl；跨工作区会话（如 C端产品规范、KPI指标制定）的标题在 DB 中，jsonl 路径分散易漏。
-  - 第一步：用 `sqlite3 ~/.workbuddy/workbuddy.db` 查询 `sessions` 表，按 `created_at`（毫秒时间戳）筛选目标日期范围，取 `id`、`title`、`cwd`；`title` 即会话主题，`cwd` 标识工作区文件夹。
-  - 命中数为 0 时再降级查 jsonl，不得跳过 DB 直接扫 jsonl。
-  - 第二步：按 sessionId 在 `~/.workbuddy/projects/` 下定位对应 `.jsonl`，只提取用户请求与 assistant 摘要，跳过 tool_call / tool_result 细节。
-  - 第三步：如有 `~/.workbuddy/projects/*/.workbuddy/memory/YYYY-MM-DD.md`，直接读取目标日期范围内的 memory 文件补充摘要。
+  - **优先查 `~/.workbuddy/workbuddy.db` 的 sessions 表**，不要只扫 jsonl；跨工作区会话标题在 DB 中。
+  - 第一步：按 `created_at`（毫秒）筛选，取 `id`、`title`、`cwd`；命中数为 0 再降级查 jsonl。
+  - 第二步：`find ~/.workbuddy/projects -name '<sessionId>.jsonl'`，再 `grep -m 40 '"role":"user"\|"input_text"\|"output_text"' <session.jsonl> | head -150`。
+  - 第三步（可选）：读取目标日期范围内的 `~/.workbuddy/projects/*/.workbuddy/memory/*.md`。
+  - 命令：
+    ```bash
+    sqlite3 ~/.workbuddy/workbuddy.db \
+      "SELECT id, title, cwd FROM sessions WHERE created_at >= START_MS AND created_at <= END_MS ORDER BY created_at DESC LIMIT 30;"
+    ```
 
 - **其他 AI 工具**
-  - 只读取明确属于该工具的本地会话、日志、history 或 transcript。
-  - 如格式不清楚，先抽样读取少量文件确认字段，再筛选目标日期范围。
+  - 先抽样读 1 个文件前 30 行确认字段格式，再用 grep 按内部时间戳过滤；遵守硬性读取上限。
 
 ### 第 4 步：提取有效信息
 
-- 优先提取：用户任务、完成事项、关键产出、创建或修改的文件、验证结果、受阻原因。
-- 跳过：重复追问、纯闲聊、工具调用细节、临时日志、无结论的报错堆栈、token 或密钥。
+- 从 grep 已抽取的内容中归纳：用户任务、完成事项、关键产出、关键文件、验证结果、受阻原因。
+- 跳过：重复追问、纯闲聊、tool_call / tool_result 细节、临时日志、报错堆栈、token 或密钥。
 - 同一任务跨多个工具或多次会话出现时，合并为同一个工作主题，并标注涉及工具。
+- **不因信息不足而回头读取更多文件**；信息不足时用"看起来""可能"表述，不做无依据推断。
 
 ### 第 5 步：汇总
 
@@ -154,7 +204,7 @@ description: 从本地 AI 工具会话记录生成一周工作总结，支持单
 - 默认直接在当前会话输出（严格按模板格式）。
 - 若用户附带钉钉文件夹链接，则额外写入钉钉文档（严格按同一模板格式）：
   - **文档标题规则**：
-    - 单工具：`{工具名}一周工作总结`，例如 `cursor一周工作总结`。
+    - 单工具：`{工具名}一周工作总结`，例如 `cursor一周工作总结`、**`Trae一周工作总结`**（禁止 `Trae CN一周工作总结`）。
     - 多工具 / all：`AI工具一周使用总结`。
   - **同名文件删除后重建规则（强制）**：
     - 创建前必须先使用 dingtalk-doc-mcp 在目标文件夹下搜索标题与目标标题完全匹配的文档。
