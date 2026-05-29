@@ -1,6 +1,6 @@
 # Claude Code 个人本地 Skills 清单
 
-最后更新时间：2026-05-28 18:31:43 CST
+最后更新时间：2026-05-29 15:05:41 CST
 
 本文件仅记录当前由用户自建或个人维护的 Claude Code skills。范围为 `/Users/sammilv/.claude/skills` 下的自建 skills，不包含系统内置、插件、市场安装、缓存或外部托管的 skills。
 
